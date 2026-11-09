@@ -365,28 +365,56 @@ def calcular_metricas(y_true, proba, limiar: float = 0.5) -> dict:
     }
 
 
+def _rodar_fold(X_tr, y_tr, X_va, cfg, seed):
+    """Treina em um fold e devolve (probabilidades da validação, nº de épocas).
+
+    Cada processo usa 1 thread de álgebra linear: para redes pequenas isso é
+    tão rápido quanto usar várias, e permite rodar os folds em paralelo.
+    """
+    from threadpoolctl import threadpool_limits
+    with threadpool_limits(1):
+        prep, rede, n_ep = treinar_modelo(X_tr, y_tr, cfg, seed=seed)
+        return prever_proba(prep, rede, X_va), n_ep
+
+
 def avaliar_cv(X: pd.DataFrame, y: np.ndarray, cfg: dict, n_folds: int = 5,
-               seed: int = RANDOM_STATE) -> dict:
+               seed: int = RANDOM_STATE, n_jobs: int = -1) -> dict:
     """Validação cruzada estratificada. Os folds são sempre os mesmos (mesma
     semente), então todas as configurações são comparadas nas mesmas divisões.
+    Os folds são treinados em paralelo (``n_jobs`` processos; -1 = todos os núcleos).
 
     Devolve as métricas médias, os desvios-padrão, o nº médio de épocas, o
     tempo e as probabilidades fora-do-fold (OOF) de cada exemplo.
     """
+    from joblib import Parallel, delayed
     skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    divisoes = list(skf.split(X, y))
+    inicio = time.time()
+    saidas = Parallel(n_jobs=n_jobs)(
+        delayed(_rodar_fold)(X.iloc[tr], y[tr], X.iloc[va], cfg, seed + i)
+        for i, (tr, va) in enumerate(divisoes))
     oof = np.zeros(len(y), dtype=float)
     por_fold, epocas = [], []
-    inicio = time.time()
-    for i, (idx_tr, idx_va) in enumerate(skf.split(X, y)):
-        prep, rede, n_ep = treinar_modelo(X.iloc[idx_tr], y[idx_tr], cfg, seed=seed + i)
-        oof[idx_va] = prever_proba(prep, rede, X.iloc[idx_va])
-        por_fold.append(calcular_metricas(y[idx_va], oof[idx_va]))
+    for (tr, va), (proba, n_ep) in zip(divisoes, saidas):
+        oof[va] = proba
+        por_fold.append(calcular_metricas(y[va], proba))
         epocas.append(n_ep)
     df_folds = pd.DataFrame(por_fold)
     res = {m: df_folds[m].mean() for m in METRICAS}
     res.update({f"{m}_dp": df_folds[m].std() for m in METRICAS})
     res.update({"epocas": float(np.mean(epocas)), "tempo_s": time.time() - inicio, "oof": oof})
     return res
+
+
+def treinar_sementes(X_tr, y_tr, cfg: dict, sementes, n_jobs: int = -1):
+    """Treina uma rede por semente (em paralelo). Devolve [(prep, rede, nº de épocas), ...]."""
+    from joblib import Parallel, delayed
+    from threadpoolctl import threadpool_limits
+
+    def _um(seed):
+        with threadpool_limits(1):
+            return treinar_modelo(X_tr, y_tr, cfg, seed=seed)
+    return Parallel(n_jobs=n_jobs)(delayed(_um)(s) for s in sementes)
 
 
 # --------------------------------------------------------------------------
@@ -423,22 +451,45 @@ class Bancada:
     variação da etapa é escolhida pela métrica ``metrica_escolha``.
     """
 
-    def __init__(self, X, y, n_folds=5, metrica_escolha="roc_auc", seed=RANDOM_STATE):
+    def __init__(self, X, y, n_folds=5, metrica_escolha="roc_auc", seed=RANDOM_STATE,
+                 pasta_cache=None):
         self.X, self.y = X, y
         self.n_folds, self.metrica, self.seed = n_folds, metrica_escolha, seed
         self.melhor_cfg = dict(CONFIG_BASE)
         self.historico = []      # uma linha por experimento
         self.oof = {}            # probabilidades OOF por experimento
         self._cache = {}
+        # Cache em disco: se o notebook for interrompido, ao rodar de novo as
+        # configurações já avaliadas são lidas do disco em vez de retreinadas.
+        self.pasta_cache = pasta_cache
+        if pasta_cache:
+            os.makedirs(pasta_cache, exist_ok=True)
 
     def _chave(self, cfg):
         return repr(sorted(cfg.items()))
 
-    def avaliar(self, cfg, etapa, nome):
+    def _arquivo_cache(self, chave):
+        import hashlib
+        texto = f"{chave}|{self.n_folds}|{self.seed}|{len(self.y)}"
+        return os.path.join(self.pasta_cache, hashlib.md5(texto.encode()).hexdigest() + ".joblib")
+
+    def _avaliar_com_cache(self, cfg):
+        import joblib
         chave = self._chave(cfg)
-        if chave not in self._cache:  # não repete configurações já avaliadas
-            self._cache[chave] = avaliar_cv(self.X, self.y, cfg, self.n_folds, self.seed)
-        res = self._cache[chave]
+        if chave in self._cache:  # não repete configurações já avaliadas
+            return self._cache[chave]
+        arquivo = self._arquivo_cache(chave) if self.pasta_cache else None
+        if arquivo and os.path.exists(arquivo):
+            res = joblib.load(arquivo)
+        else:
+            res = avaliar_cv(self.X, self.y, cfg, self.n_folds, self.seed)
+            if arquivo:
+                joblib.dump(res, arquivo)
+        self._cache[chave] = res
+        return res
+
+    def avaliar(self, cfg, etapa, nome):
+        res = self._avaliar_com_cache(cfg)
         self.oof[f"{etapa} | {nome}"] = res["oof"]
         linha = {"etapa": etapa, "experimento": nome}
         linha.update({k: v for k, v in res.items() if k != "oof"})
@@ -467,7 +518,7 @@ class Bancada:
 
     def oof_melhor(self) -> np.ndarray:
         """Probabilidades fora-do-fold da melhor configuração atual."""
-        return self._cache[self._chave(self.melhor_cfg)]["oof"]
+        return self._avaliar_com_cache(self.melhor_cfg)["oof"]
 
     def resultados(self) -> pd.DataFrame:
         return pd.DataFrame(self.historico)
