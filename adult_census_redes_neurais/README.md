@@ -8,7 +8,7 @@ Bancada de experimentos para encontrar as configurações de rede neural (MLP), 
 |---|---|
 | `bancada_redes_neurais_adult.ipynb` | notebook com todas as etapas, resultados, gráficos e análises |
 | `analise_dataset_resultados.ipynb` | gráficos das características do dataset, análise dos principais resultados da rede e importância das features (permutação e dependência parcial) |
-| `bancada.py` | código da bancada: carregamento, pipeline de pré-processamento, rede, validação cruzada e registro dos experimentos |
+| `bancada.ipynb` | funções e classes da bancada (carregamento, pipeline de pré-processamento, rede, validação cruzada e registro dos experimentos), carregadas pelos outros notebooks com `%run bancada.ipynb` |
 | `resultados/resultados_experimentos.csv` | todas as métricas de todos os experimentos |
 
 ## Como rodar
@@ -16,7 +16,7 @@ Bancada de experimentos para encontrar as configurações de rede neural (MLP), 
 ```bash
 pip install scikit-learn imbalanced-learn pandas matplotlib kagglehub jupyter
 jupyter notebook bancada_redes_neurais_adult.ipynb
-jupyter notebook analise_dataset_resultados.ipynb   # ~2 min; usa a melhor configuração (bancada.MELHOR_CONFIG)
+jupyter notebook analise_dataset_resultados.ipynb   # ~2 min; usa a melhor configuração (MELHOR_CONFIG, em bancada.ipynb)
 ```
 
 O dataset é baixado do Kaggle (`kagglehub`). Sem acesso ao Kaggle, é usado um espelho do UCI no GitHub com as mesmas 32.561 linhas. A execução completa leva cerca de 40 minutos num processador de 4 núcleos (os folds rodam em paralelo). Os resultados de cada configuração ficam salvos em `resultados/cache/`, então uma execução interrompida continua de onde parou.
