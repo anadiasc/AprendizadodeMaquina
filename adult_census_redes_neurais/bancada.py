@@ -442,6 +442,20 @@ CONFIG_BASE = {
     "frac_parada": 0.1,
 }
 
+# Melhor configuração encontrada pela bancada (notebook bancada_redes_neurais_adult.ipynb)
+MELHOR_CONFIG = {
+    **CONFIG_BASE,
+    "features": ("flags_capital",),
+    "codificacao": "onehot",
+    "camadas": (256,),
+    "l2": 0.3,
+    "lr": 3e-4,
+    "paciencia": 30,
+    "reduzir_lr": True,
+}
+# Limiar que maximizou o F1 nas previsões fora-do-fold da melhor configuração
+LIMIAR_F1 = 0.40
+
 
 class Bancada:
     """Executa etapas de experimentos e guarda o histórico de todos os resultados.
